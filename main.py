@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from enum import Enum
 import torch
+import gradio as gr
 from transformers import pipeline
 import tempfile
 import os
@@ -55,6 +56,17 @@ class ErrorResponse(BaseModel):
 
 # Global models cache
 loaded_models: Dict[str, any] = {}
+
+def transcribe_file_path(file_path: str, model: ASRModel) -> str:
+    """Run transcription on a local file path and return text."""
+    asr_model = get_or_load_model(model)
+    result = asr_model(file_path)
+
+    if isinstance(result, dict):
+        return result.get("text", "")
+    if isinstance(result, str):
+        return result
+    return str(result)
 
 def get_or_load_model(model_name: ASRModel):
     """Load a model on-demand or return cached model"""
@@ -152,15 +164,7 @@ async def transcribe_audio(
         logger.info(f"Processing file: {file.filename} ({len(content)} bytes) with model: {model}")
 
         # Transcribe the audio
-        result = asr_model(temp_file_path)
-
-        # Extract text from result (handle both formats)
-        if isinstance(result, dict):
-            transcription_text = result.get("text", "")
-        elif isinstance(result, str):
-            transcription_text = result
-        else:
-            transcription_text = str(result)
+        transcription_text = transcribe_file_path(temp_file_path, model)
 
         logger.info(f"Transcription completed: {transcription_text[:100]}...")
 
@@ -228,15 +232,7 @@ async def transcribe_batch(
                 temp_file_path = temp_file.name
 
             # Transcribe
-            result = asr_model(temp_file_path)
-
-            # Extract text from result (handle both formats)
-            if isinstance(result, dict):
-                transcription_text = result.get("text", "")
-            elif isinstance(result, str):
-                transcription_text = result
-            else:
-                transcription_text = str(result)
+            transcription_text = transcribe_file_path(temp_file_path, model)
 
             results.append({
                 "filename": file.filename,
@@ -263,6 +259,55 @@ async def transcribe_batch(
         "model": model.value,
         "status": "completed"
     }
+
+def create_gradio_ui() -> gr.Blocks:
+    """Create Gradio UI for manual audio uploads."""
+    with gr.Blocks(title="Typhoon ASR UI") as demo:
+        gr.Markdown("# Typhoon ASR\nUpload a WAV file and pick a model to transcribe Thai or Isan speech.")
+
+        with gr.Row():
+            model_dropdown = gr.Dropdown(
+                choices=[model.value for model in ASRModel],
+                value=ASRModel.TYPHOON_ISAN_WHISPER.value,
+                label="Model"
+            )
+            audio_input = gr.Audio(
+                sources=["upload"],
+                type="filepath",
+                label="WAV File",
+                interactive=True
+            )
+
+        transcribe_btn = gr.Button("Transcribe")
+        output_text = gr.Textbox(label="Transcription", lines=4)
+        status_json = gr.JSON(label="Details")
+
+        def gradio_transcribe(audio_path: str, model_name: str):
+            if not audio_path:
+                return "", {"status": "error", "message": "Please upload a WAV file."}
+            try:
+                model_enum = ASRModel(model_name)
+                text = transcribe_file_path(audio_path, model_enum)
+                return text, {
+                    "model": model_enum.value,
+                    "language": MODEL_CONFIG[model_enum]["language"],
+                    "status": "success"
+                }
+            except Exception as e:
+                logger.error(f"Gradio transcription error: {str(e)}")
+                return "", {"status": "error", "message": str(e)}
+
+        transcribe_btn.click(
+            fn=gradio_transcribe,
+            inputs=[audio_input, model_dropdown],
+            outputs=[output_text, status_json]
+        )
+
+    return demo
+
+# Mount Gradio interface at /ui
+gradio_app = create_gradio_ui()
+app = gr.mount_gradio_app(app, gradio_app, path="/ui")
 
 if __name__ == "__main__":
     import uvicorn

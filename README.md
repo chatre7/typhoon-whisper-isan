@@ -237,6 +237,7 @@ print(response.json())
 Once the server is running, you can access:
 - Swagger UI: `http://localhost:8000/docs`
 - ReDoc: `http://localhost:8000/redoc`
+- Gradio UI: `http://localhost:8000/ui` (upload a WAV file, pick a model, and transcribe directly from the browser)
 
 ## Error Handling
 
